@@ -103,7 +103,7 @@ int main() {
     int w2 = 0, h2 = 0, c2 = 0;
     
     printf("Loading grayscale.jpg...\n");
-    unsigned char* gray_data_raw = stbi_load("mandril_gray.jpg", &w1, &h1, &c1, 1);
+    unsigned char* gray_data_raw = stbi_load("sunset_gray.jpg", &w1, &h1, &c1, 1);
     if (!gray_data_raw) {
         printf("ERROR: Failed to load grayscale.jpg\n");
         system("pause");
@@ -121,7 +121,7 @@ int main() {
     stbi_image_free(gray_data_raw);
 
     printf("Loading reference.jpg...\n");
-    unsigned char* ref_data = stbi_load("mandril_color.jpg", &w2, &h2, &c2, 3);
+    unsigned char* ref_data = stbi_load("sunset_colour.jpg", &w2, &h2, &c2, 3);
     if (!ref_data) {
         printf("ERROR: Failed to load reference.jpg\n");
         system("pause");
