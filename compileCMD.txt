@@ -1,0 +1,1 @@
+gcc colour_transfer.c -o colour_transfer -g -lm
