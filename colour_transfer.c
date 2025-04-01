@@ -1,4 +1,3 @@
-
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 
@@ -11,11 +10,6 @@
 typedef struct {
     float r, g, b;
 } Pixel;
-
-typedef struct {
-    int width, height;
-    Pixel* data;
-} Image;
 
 float clamp(float x, float min, float max) {
     if (x < min) return min;
@@ -50,7 +44,6 @@ void xyz_to_lab(float x, float y, float z, float* l, float* a, float* b) {
     if (l) *l = 116.0f * fy - 16.0f;
     if (a) *a = 500.0f * (fx - fy);
     if (b) *b = 200.0f * (fy - fz);    
-
 }
 
 void rgb_to_lab(Pixel p, float* l, float* a, float* b) {
@@ -84,15 +77,26 @@ Pixel lab_to_rgb(float l, float a, float b) {
     return p;
 }
 
-void compute_mean_std(float* values, int count, float* mean, float* stddev) {
+void compute_mean_std_patch(float* values, int width, int height, int patch_x, int patch_y, int patch_size, float* mean, float* stddev) {
+    int count = 0;
     float sum = 0.0f;
-    for (int i = 0; i < count; i++) sum += values[i];
+
+    for (int y = patch_y; y < patch_y + patch_size && y < height; y++) {
+        for (int x = patch_x; x < patch_x + patch_size && x < width; x++) {
+            int idx = y * width + x;
+            sum += values[idx];
+            count++;
+        }
+    }
     *mean = sum / count;
 
     float variance = 0.0f;
-    for (int i = 0; i < count; i++) {
-        float diff = values[i] - *mean;
-        variance += diff * diff;
+    for (int y = patch_y; y < patch_y + patch_size && y < height; y++) {
+        for (int x = patch_x; x < patch_x + patch_size && x < width; x++) {
+            int idx = y * width + x;
+            float diff = values[idx] - *mean;
+            variance += diff * diff;
+        }
     }
     *stddev = sqrtf(variance / count);
 }
@@ -103,7 +107,7 @@ int main() {
     int w2 = 0, h2 = 0, c2 = 0;
     
     printf("Loading grayscale.jpg...\n");
-    unsigned char* gray_data_raw = stbi_load("sunset_gray.jpg", &w1, &h1, &c1, 1);
+    unsigned char* gray_data_raw = stbi_load("mandril_gray.jpg", &w1, &h1, &c1, 1);
     if (!gray_data_raw) {
         printf("ERROR: Failed to load grayscale.jpg\n");
         system("pause");
@@ -121,22 +125,31 @@ int main() {
     stbi_image_free(gray_data_raw);
 
     printf("Loading reference.jpg...\n");
-    unsigned char* ref_data = stbi_load("sunset_colour.jpg", &w2, &h2, &c2, 3);
+    unsigned char* ref_data = stbi_load("mandril_color.jpg", &w2, &h2, &c2, 3);
     if (!ref_data) {
         printf("ERROR: Failed to load reference.jpg\n");
-        system("pause");
+        free(gray_data);
         return 1;
     }
     printf("Reference image loaded: %dx%d, %d channels\n", w2, h2, c2);
-    
 
-    int count = w1 * h1;
+    if (w1 != w2 || h1 != h2) {
+        printf("ERROR: Grayscale and reference images must have the same dimensions\n");
+        free(gray_data);
+        stbi_image_free(ref_data);
+        return 1;
+    }
+
+    int width = w1;
+    int height = h1;
+    int count = width * height;
     float *lab_l = malloc(sizeof(float) * count);
     float *lab_a = malloc(sizeof(float) * count);
     float *lab_b = malloc(sizeof(float) * count);
     float *ref_a = malloc(sizeof(float) * count);
     float *ref_b = malloc(sizeof(float) * count);
 
+    // Convert both images to Lab color space
     for (int i = 0; i < count; i++) {
         int idx = i * 3;
         Pixel p_gray = { gray_data[idx]/255.0f, gray_data[idx+1]/255.0f, gray_data[idx+2]/255.0f };
@@ -146,27 +159,42 @@ int main() {
         rgb_to_lab(p_ref, NULL, &ref_a[i], &ref_b[i]);
     }
 
-    float mean_a_src, std_a_src, mean_b_src, std_b_src;
-    float mean_a_ref, std_a_ref, mean_b_ref, std_b_ref;
-
-    compute_mean_std(lab_a, count, &mean_a_src, &std_a_src);
-    compute_mean_std(lab_b, count, &mean_b_src, &std_b_src);
-    compute_mean_std(ref_a, count, &mean_a_ref, &std_a_ref);
-    compute_mean_std(ref_b, count, &mean_b_ref, &std_b_ref);
-
+    // Define patch size
+    const int patch_size = 32;
     unsigned char* result = malloc(count * 3);
-    for (int i = 0; i < count; i++) {
-        float new_a = (std_a_src != 0) ? ((lab_a[i] - mean_a_src) * (std_a_ref / std_a_src) + mean_a_ref) : mean_a_ref;
-        float new_b = (std_b_src != 0) ? ((lab_b[i] - mean_b_src) * (std_b_ref / std_b_src) + mean_b_ref) : mean_b_ref;        
-        float clamped_a = fmaxf(fminf(new_a, 127), -127);
-        float clamped_b = fmaxf(fminf(new_b, 127), -127);
-        Pixel p = lab_to_rgb(lab_l[i], clamped_a, clamped_b);
-        result[i * 3 + 0] = (unsigned char)(p.r * 255);
-        result[i * 3 + 1] = (unsigned char)(p.g * 255);
-        result[i * 3 + 2] = (unsigned char)(p.b * 255);
+
+    // Process the image in defined patches
+    for (int py = 0; py < height; py += patch_size) {
+        for (int px = 0; px < width; px += patch_size) {
+            // Compute local mean and standard deviation for the patch
+            float mean_a_src, std_a_src, mean_b_src, std_b_src;
+            float mean_a_ref, std_a_ref, mean_b_ref, std_b_ref;
+
+            compute_mean_std_patch(lab_a, width, height, px, py, patch_size, &mean_a_src, &std_a_src);
+            compute_mean_std_patch(lab_b, width, height, px, py, patch_size, &mean_b_src, &std_b_src);
+            compute_mean_std_patch(ref_a, width, height, px, py, patch_size, &mean_a_ref, &std_a_ref);
+            compute_mean_std_patch(ref_b, width, height, px, py, patch_size, &mean_b_ref, &std_b_ref);
+
+            // Apply color transfer within the patch
+            for (int y = py; y < py + patch_size && y < height; y++) {
+                for (int x = px; x < px + patch_size && x < width; x++) {
+                    int i = y * width + x;
+
+                    float new_a = (std_a_src > 1e-3f) ? ((lab_a[i] - mean_a_src) * (std_a_ref / (std_a_src + 1e-3f)) + mean_a_ref) : ref_a[i];
+                    float new_b = (std_b_src > 1e-3f) ? ((lab_b[i] - mean_b_src) * (std_b_ref / (std_b_src + 1e-3f)) + mean_b_ref) : ref_b[i];
+
+                    float clamped_a = fmaxf(fminf(new_a, 128), -128);
+                    float clamped_b = fmaxf(fminf(new_b, 128), -128);
+                    Pixel p = lab_to_rgb(lab_l[i], clamped_a, clamped_b);
+                    result[i * 3 + 0] = (unsigned char)(p.r * 255);
+                    result[i * 3 + 1] = (unsigned char)(p.g * 255);
+                    result[i * 3 + 2] = (unsigned char)(p.b * 255);
+                }
+            }
+        }
     }
 
-    stbi_write_jpg("colorized_output.jpg", w1, h1, 3, result, w1 * 3);
+    stbi_write_jpg("colorized_output.jpg", width, height, 3, result, width * 3);
     printf("Colorized image saved as 'colorized_output.jpg'\n");
 
     free(gray_data);
